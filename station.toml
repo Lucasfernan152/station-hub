@@ -1,0 +1,11 @@
+bund = "127.0.0.1:17321"
+
+[[device]]
+id = "scanner-1"
+kind = "scanner"
+name = "COM10"
+
+[[device]]
+id = "scale-1"
+kind = "scale"
+name = "COM12"
