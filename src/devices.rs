@@ -8,11 +8,13 @@ use serialport::{SerialPort, SerialPortType};
 use crate::core::{parse_grams, LineFramer, Stabilizer};
 use crate::event::Event;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PortMatch {
     Usb { vid: u16, pid: u16 },
     Name(String)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSpec {
     pub id: String,
     pub port: PortMatch
@@ -67,18 +69,30 @@ fn spawn_device(spec: DeviceSpec, tx: Sender<Event>, mode: ReadMode) {
 
 fn find_port(spec: &PortMatch) -> Option<String> {
     let ports = serialport::available_ports().ok()?;
+    let listed: Vec<(String, Option<(u16, u16)>)> = ports
+        .into_iter()
+        .map(|p| {
+            let usb = match p.port_type {
+                SerialPortType::UsbPort(info) => Some((info.vid, info.pid)),
+                _ => None,
+            };
+            (p.port_name, usb)
+        })
+        .collect();
+    pick_port(spec, &listed)
+}
+
+pub(crate) fn pick_port(spec: &PortMatch, ports: &[(String, Option<(u16, u16)>)]) -> Option<String> {
     match spec {
-        PortMatch::Usb { vid, pid } => ports.into_iter().find_map(|p| match p.port_type {
-            SerialPortType::UsbPort(info) if info.vid == *vid && info.pid == *pid => {
-                Some(p.port_name)
-            }
-            _ => None
+        PortMatch::Usb { vid, pid } => ports.iter().find_map(|(name, usb)| match usb {
+            Some((v, p)) if v == vid && p == pid => Some(name.clone()),
+            _ => None,
         }),
         PortMatch::Name(name) => ports
-            .into_iter()
-            .map(|p| p.port_name)
-            .find(|n| n == name)
-            .or_else(|| Some(name.clone()))
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(n, _)| n.clone())
+            .or_else(|| Some(name.clone())),
     }
 }
 
@@ -133,6 +147,41 @@ fn read_scale(port: &mut dyn SerialPort, device: &str, tx: &Sender<Event>) -> St
             },
             Err(e) => return e.to_string()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{pick_port, PortMatch};
+
+    #[test]
+    fn usb_match_uses_vid_pid() {
+        let ports = vec![
+            ("COM3".into(), Some((0x0403, 0x6001))),
+            ("COM10".into(), Some((0x0C2E, 0x0200))),
+        ];
+        assert_eq!(
+            pick_port(&PortMatch::Usb { vid: 0x0C2E, pid: 0x0200 }, &ports),
+            Some("COM10".into())
+        );
+    }
+
+    #[test]
+    fn name_falls_back_when_missing() {
+        let ports = vec![("COM3".into(), None)];
+        assert_eq!(
+            pick_port(&PortMatch::Name("COM12".into()), &ports),
+            Some("COM12".into())
+        );
+    }
+
+    #[test]
+    fn name_uses_listed_port() {
+        let ports = vec![("COM12".into(), None)];
+        assert_eq!(
+            pick_port(&PortMatch::Name("COM12".into()), &ports),
+            Some("COM12".into())
+        );
     }
 }
 
