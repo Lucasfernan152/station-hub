@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Scan { device: String, code: String },
     WeightStable { device: String, grams: i32 },
@@ -45,5 +45,34 @@ impl Envelope {
             device,
             body
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Body, Envelope, Event};
+
+    #[test]
+    fn scan_envelope_flattens_kind() {
+        let env = Envelope::from_event(Event::Scan {
+            device: "scanner-1".into(),
+            code: "779".into(),
+        });
+        assert_eq!(env.v, 1);
+        assert_eq!(env.device, "scanner-1");
+        let json = serde_json::to_value(&env).unwrap();
+        assert_eq!(json["kind"], "scan");
+        assert_eq!(json["code"], "779");
+    }
+
+    #[test]
+    fn weight_cleared_has_no_extra_fields() {
+        let env = Envelope::from_event(Event::WeightCleared {
+            device: "scale-1".into(),
+        });
+        assert!(matches!(env.body, Body::WeightCleared));
+        let json = serde_json::to_value(&env).unwrap();
+        assert_eq!(json["kind"], "weight_cleared");
+        assert!(json.get("grams").is_none());
     }
 }

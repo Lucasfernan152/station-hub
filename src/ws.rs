@@ -16,18 +16,16 @@ pub struct App {
     pub snapshot: Arc<Mutex<HashMap<String, String>>>
 }
 
-pub async fn serve(bind: String, app: App) {
+pub async fn serve(bind: String, app: App) -> std::io::Result<()> {
     let router = Router::new()
         .route("/", get(index))
         .route("/ws", get(ws_upgrade))
         .with_state(app);
 
-    let listener = tokio::net::TcpListener::bind(&bind)
-        .await
-        .expect("bind_ws");
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
     eprintln!("hub ui  http://{bind}");
     eprintln!("hub ws  ws://{bind}/ws");
-    axum::serve(listener, router).await.expect("ws server");
+    axum::serve(listener, router).await
 }
 
 async fn index() -> Html<&'static str> {
@@ -81,5 +79,42 @@ pub fn apply_snapshot(snapshot: &Mutex<HashMap<String, String>>, env: &Envelope)
             map.remove(&env.device);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_snapshot;
+    use crate::event::{Envelope, Event};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[test]
+    fn connect_then_disconnect_updates_map() {
+        let snapshot = Mutex::new(HashMap::new());
+        let connected = Envelope::from_event(Event::DeviceConnected {
+            device: "scanner-1".into(),
+            port: "COM10".into(),
+        });
+        apply_snapshot(&snapshot, &connected);
+        assert_eq!(snapshot.lock().unwrap().get("scanner-1").unwrap(), "COM10");
+
+        let gone = Envelope::from_event(Event::DeviceDisconnected {
+            device: "scanner-1".into(),
+            reason: "unplug".into(),
+        });
+        apply_snapshot(&snapshot, &gone);
+        assert!(snapshot.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn scan_does_not_touch_devices() {
+        let snapshot = Mutex::new(HashMap::new());
+        let scan = Envelope::from_event(Event::Scan {
+            device: "scanner-1".into(),
+            code: "1".into(),
+        });
+        apply_snapshot(&snapshot, &scan);
+        assert!(snapshot.lock().unwrap().is_empty());
     }
 }

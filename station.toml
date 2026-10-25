@@ -1,4 +1,6 @@
-bund = "127.0.0.1:17321"
+# Optional lab override: cargo run -- --config station.toml
+# The product path has no file — the hub learns scanner vs scale from serial traffic.
+bind = "127.0.0.1:17321"
 
 [[device]]
 id = "scanner-1"
