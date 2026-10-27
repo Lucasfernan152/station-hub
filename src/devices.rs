@@ -55,11 +55,12 @@ fn run_printer(spec: DeviceSpec, tx: Sender<Event>, jobs: Receiver<Vec<u8>>) {
         });
 
         let reason = write_jobs(&mut *port, &jobs);
+        let channel_closed = reason == "channel closed";
         let _ = tx.send(Event::DeviceDisconnected {
             device: spec.id.clone(),
             reason,
         });
-        if reason == "channel closed" {
+        if channel_closed {
             return;
         }
     }
