@@ -6,6 +6,7 @@ mod devices;
 mod discover;
 mod event;
 mod known;
+mod print_cmd;
 mod store;
 mod ws;
 
@@ -19,7 +20,7 @@ use tokio::sync::broadcast;
 
 use crate::config::{DeviceKind, FileConfig, DEFAULT_BIND};
 use crate::core::ScanDebouncer;
-use crate::devices::{spawn_scale, spawn_scanner};
+use crate::devices::{spawn_printer, spawn_scale, spawn_scanner};
 use crate::event::{Envelope, Event};
 use crate::ws::{apply_snapshot, App};
 
@@ -52,6 +53,8 @@ where
 fn main() {
     let args = parse_args();
     let (tx, rx) = mpsc::channel();
+    let (print_tx, print_rx) = mpsc::channel::<Vec<u8>>();
+    let mut print_rx = Some(print_rx);
 
     let bind = if let Some(path) = args.config.as_deref() {
         let cfg = FileConfig::load_path(path).expect("config");
@@ -60,11 +63,18 @@ fn main() {
             match kind {
                 DeviceKind::Scanner => spawn_scanner(spec, tx.clone()),
                 DeviceKind::Scale => spawn_scale(spec, tx.clone()),
+                DeviceKind::Printer => {
+                    if let Some(jobs) = print_rx.take() {
+                        spawn_printer(spec, tx.clone(), jobs);
+                    }
+                }
             }
         }
         args.bind.unwrap_or(cfg.bind)
     } else {
-        discover::spawn(tx.clone());
+        if let Some(jobs) = print_rx.take() {
+            discover::spawn(tx.clone(), jobs);
+        }
         args.bind.unwrap_or_else(|| DEFAULT_BIND.into())
     };
 
@@ -75,6 +85,7 @@ fn main() {
         let app = App {
             events: events.clone(),
             snapshot: snapshot.clone(),
+            print_tx,
         };
 
         std::thread::spawn(move || {

@@ -29,6 +29,7 @@ pub struct DeviceConfig {
 pub enum DeviceKind {
     Scanner,
     Scale,
+    Printer,
 }
 
 impl FileConfig {

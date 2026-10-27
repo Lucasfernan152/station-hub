@@ -56,6 +56,7 @@ impl DeviceStore {
         let prefix = match kind {
             DeviceKind::Scanner => "scanner",
             DeviceKind::Scale => "scale",
+            DeviceKind::Printer => "printer",
         };
         let n = self
             .devices
@@ -119,6 +120,7 @@ mod tests {
         store.devices.push(scanner("scanner-1", "COM10"));
         assert_eq!(store.next_id(DeviceKind::Scanner), "scanner-2");
         assert_eq!(store.next_id(DeviceKind::Scale), "scale-1");
+        assert_eq!(store.next_id(DeviceKind::Printer), "printer-1");
     }
 
     #[test]

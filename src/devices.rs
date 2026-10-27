@@ -1,5 +1,5 @@
-use std::io::{self};
-use std::sync::mpsc::Sender;
+use std::io::{self, Write};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,60 @@ pub fn spawn_scanner(spec: DeviceSpec, tx: Sender<Event>) {
 
 pub fn spawn_scale(spec: DeviceSpec, tx: Sender<Event>) {
     spawn_device(spec, tx, ReadMode::Scale);
+}
+
+pub fn spawn_printer(spec: DeviceSpec, tx: Sender<Event>, jobs: Receiver<Vec<u8>>) {
+    thread::spawn(move || run_printer(spec, tx, jobs));
+}
+
+fn run_printer(spec: DeviceSpec, tx: Sender<Event>, jobs: Receiver<Vec<u8>>) {
+    loop {
+        let Some(port_name) = find_port(&spec.port) else {
+            eprintln!("{}: waiting for port", spec.id);
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
+
+        let opened = serialport::new(&port_name, 9600)
+            .timeout(Duration::from_millis(200))
+            .open();
+        let Ok(mut port) = opened else {
+            eprintln!("{}: open failed on port {port_name}", spec.id);
+            thread::sleep(Duration::from_secs(2));
+            continue;
+        };
+        let _ = port.write_data_terminal_ready(true);
+        let _ = tx.send(Event::DeviceConnected {
+            device: spec.id.clone(),
+            port: port_name,
+        });
+
+        let reason = write_jobs(&mut *port, &jobs);
+        let _ = tx.send(Event::DeviceDisconnected {
+            device: spec.id.clone(),
+            reason,
+        });
+        if reason == "channel closed" {
+            return;
+        }
+    }
+}
+
+fn write_jobs(port: &mut dyn SerialPort, jobs: &Receiver<Vec<u8>>) -> String {
+    loop {
+        match jobs.recv_timeout(Duration::from_millis(400)) {
+            Ok(bytes) => {
+                if port.write_all(&bytes).is_err() {
+                    return "write failed".into();
+                }
+                if port.flush().is_err() {
+                    return "flush failed".into();
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return "channel closed".into(),
+        }
+    }
 }
 
 enum ReadMode {

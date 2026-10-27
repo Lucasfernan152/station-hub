@@ -8,12 +8,16 @@ use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use tokio::sync::broadcast;
 
+use std::sync::mpsc::Sender;
+
 use crate::event::{Body, Envelope};
+use crate::print_cmd::decode_print_message;
 
 #[derive(Clone)]
 pub struct App {
     pub events: broadcast::Sender<Envelope>,
-    pub snapshot: Arc<Mutex<HashMap<String, String>>>
+    pub snapshot: Arc<Mutex<HashMap<String, String>>>,
+    pub print_tx: Sender<Vec<u8>>,
 }
 
 pub async fn serve(bind: String, app: App) -> std::io::Result<()> {
@@ -61,6 +65,11 @@ async fn client(mut socket: WebSocket, app: App) {
             }
             incoming = socket.recv() => {
                 match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Some(bytes) = decode_print_message(text.as_str()) {
+                            let _ = app.print_tx.send(bytes);
+                        }
+                    }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
                 }

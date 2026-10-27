@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::io;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -9,24 +9,25 @@ use serialport::{SerialPortInfo, SerialPortType};
 
 use crate::config::DeviceKind;
 use crate::core::{classify_line, LineFramer, ProbeRole};
-use crate::devices::{spawn_scale, spawn_scanner};
+use crate::devices::{spawn_printer, spawn_scale, spawn_scanner};
 use crate::event::Event;
-use crate::known::role_for_usb;
+use crate::known::role_for_port;
 use crate::store::{DeviceStore, LearnedDevice};
 
-pub fn spawn(tx: Sender<Event>) {
-    thread::spawn(move || run(tx));
+pub fn spawn(tx: Sender<Event>, print_jobs: Receiver<Vec<u8>>) {
+    thread::spawn(move || run(tx, print_jobs));
 }
 
-fn run(tx: Sender<Event>) {
+fn run(tx: Sender<Event>, print_jobs: Receiver<Vec<u8>>) {
     let store = Arc::new(Mutex::new(DeviceStore::load()));
     let claimed = Arc::new(Mutex::new(HashSet::<String>::new()));
     let spawned_ids = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let print_jobs = Arc::new(Mutex::new(Some(print_jobs)));
 
     {
         let learned = store.lock().expect("store");
         for device in &learned.devices {
-            start_device(&claimed, &spawned_ids, device, &tx);
+            start_device(&claimed, &spawned_ids, device, &tx, &print_jobs);
         }
     }
 
@@ -41,24 +42,25 @@ fn run(tx: Sender<Event>) {
                 continue;
             }
 
-            let (vid, pid) = usb_ids(&info);
+            let (vid, pid, product) = usb_meta(&info);
             if let Some(device) = store
                 .lock()
                 .expect("store")
                 .match_port(&name, vid, pid)
                 .cloned()
             {
-                start_device(&claimed, &spawned_ids, &device, &tx);
+                start_device(&claimed, &spawned_ids, &device, &tx, &print_jobs);
                 continue;
             }
 
             if let (Some(vid), Some(pid)) = (vid, pid) {
-                if let Some(kind) = role_for_usb(vid, pid) {
+                if let Some(kind) = role_for_port(vid, pid, product.as_deref()) {
                     remember_and_spawn(
                         &store,
                         &claimed,
                         &spawned_ids,
                         &tx,
+                        &print_jobs,
                         kind,
                         name,
                         Some(vid),
@@ -72,7 +74,10 @@ fn run(tx: Sender<Event>) {
             let claimed = claimed.clone();
             let spawned_ids = spawned_ids.clone();
             let tx = tx.clone();
-            thread::spawn(move || probe(name, vid, pid, store, claimed, spawned_ids, tx));
+            let print_jobs = print_jobs.clone();
+            thread::spawn(move || {
+                probe(name, vid, pid, store, claimed, spawned_ids, tx, print_jobs)
+            });
         }
         thread::sleep(Duration::from_secs(2));
     }
@@ -83,6 +88,7 @@ fn start_device(
     spawned_ids: &Mutex<HashSet<String>>,
     device: &LearnedDevice,
     tx: &Sender<Event>,
+    print_jobs: &Mutex<Option<Receiver<Vec<u8>>>>,
 ) {
     claimed.lock().expect("claimed").insert(device.last_port.clone());
     if !spawned_ids.lock().expect("ids").insert(device.id.clone()) {
@@ -91,6 +97,13 @@ fn start_device(
     match device.kind {
         DeviceKind::Scanner => spawn_scanner(device.spec(), tx.clone()),
         DeviceKind::Scale => spawn_scale(device.spec(), tx.clone()),
+        DeviceKind::Printer => {
+            let Some(jobs) = print_jobs.lock().expect("print").take() else {
+                eprintln!("{}: extra printer ignored", device.id);
+                return;
+            };
+            spawn_printer(device.spec(), tx.clone(), jobs);
+        }
     }
 }
 
@@ -99,6 +112,7 @@ fn remember_and_spawn(
     claimed: &Mutex<HashSet<String>>,
     spawned_ids: &Mutex<HashSet<String>>,
     tx: &Sender<Event>,
+    print_jobs: &Mutex<Option<Receiver<Vec<u8>>>>,
     kind: DeviceKind,
     port: String,
     vid: Option<u16>,
@@ -116,7 +130,7 @@ fn remember_and_spawn(
     eprintln!("{}: {:?} on {port}", device.id, kind);
     store.upsert(device.clone());
     drop(store);
-    start_device(claimed, spawned_ids, &device, tx);
+    start_device(claimed, spawned_ids, &device, tx, print_jobs);
 }
 
 fn probe(
@@ -127,6 +141,7 @@ fn probe(
     claimed: Arc<Mutex<HashSet<String>>>,
     spawned_ids: Arc<Mutex<HashSet<String>>>,
     tx: Sender<Event>,
+    print_jobs: Arc<Mutex<Option<Receiver<Vec<u8>>>>>,
 ) {
     eprintln!("probe: waiting for data on {name}");
     let opened = serialport::new(&name, 9600)
@@ -190,13 +205,23 @@ fn probe(
         ProbeRole::Scanner => DeviceKind::Scanner,
         ProbeRole::Scale => DeviceKind::Scale,
     };
-    remember_and_spawn(&store, &claimed, &spawned_ids, &tx, kind, name, vid, pid);
+    remember_and_spawn(
+        &store,
+        &claimed,
+        &spawned_ids,
+        &tx,
+        &print_jobs,
+        kind,
+        name,
+        vid,
+        pid,
+    );
 }
 
-fn usb_ids(info: &SerialPortInfo) -> (Option<u16>, Option<u16>) {
+fn usb_meta(info: &SerialPortInfo) -> (Option<u16>, Option<u16>, Option<String>) {
     match &info.port_type {
-        SerialPortType::UsbPort(usb) => (Some(usb.vid), Some(usb.pid)),
-        _ => (None, None),
+        SerialPortType::UsbPort(usb) => (Some(usb.vid), Some(usb.pid), usb.product.clone()),
+        _ => (None, None, None),
     }
 }
 

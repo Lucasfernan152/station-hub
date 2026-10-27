@@ -1,6 +1,6 @@
 # station-hub
 
-Local serial hub for a barcode scanner and scale. Listens on `127.0.0.1:17321` and broadcasts JSON over WebSocket (`/ws`).
+Local serial hub for a barcode scanner, scale, and ESC/POS ticket printer. Listens on `127.0.0.1:17321` and broadcasts JSON over WebSocket (`/ws`).
 
 ## Default (no config)
 
@@ -12,7 +12,8 @@ cargo run --release
 
 The hub lists serial ports, skips Bluetooth, and **learns roles from traffic**:
 
-- USB VID/PID in a small known table → scanner or scale immediately
+- USB VID/PID in a small known table → scanner, scale, or thermal printer immediately
+- USB product string containing `print` / `thermal` / `tm-t` → printer (cheap 80mm on CH340)
 - otherwise it waits for the first lines: streaming weight → scale; a single barcode-like line → scanner
 
 The mapping is saved to `%APPDATA%\Geco\devices.json` (or `~/Library/Application Support/Geco/` on macOS) so the next launch reconnects without waiting. Delete that file to re-learn.
@@ -30,3 +31,11 @@ cargo run --release -- --config station.toml
 ## Protocol
 
 Same envelopes as before: `scan`, `weight_stable`, `weight_cleared`, `device_connected`, `device_disconnected`, plus a `snapshot` on connect.
+
+Geco sends print jobs on the same socket:
+
+```json
+{ "kind": "print", "data": "<base64 ESC/POS bytes>" }
+```
+
+The hub writes them to the learned printer port. If the printer is only a Windows USBPRINT device (no COM port), it will not show up here.
